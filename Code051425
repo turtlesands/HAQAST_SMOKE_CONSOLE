@@ -1,0 +1,1987 @@
+// University of Wisconsin HAQAST Smoke Console, May 2025
+// Funded by the NASA Health and Air Quality Applied Sciences Team (HAQAST)
+
+// Reset the ROI 
+Map.drawingTools().layers().remove(Map.drawingTools().layers().get(0));
+
+// Geometry to reduce resource use and computation time.
+var geometry = 
+    ee.Geometry.Polygon(
+        [[[-138.0, 64.0],
+          [-138.0, 16.0],
+          [-61.0, 16.0],
+          [-61.0, 64.0]]], null, false);
+
+print('Open Map Window to Full Extent and Choose Full Screen');
+print('View for Optimal Functionality');
+print('Patrick J. Reddy   2025');
+print('pjreddy@wisc.edu');
+print('Holloway Group');
+print('University of Wisconsin-Madison');
+print('hollowaygroup.org');
+print('preddyresearch@gmail.com');
+
+// Set initial view to the lower 48 states
+Map.setCenter(-98.3, 37.49, 5);
+
+// Declare export count variable and a flag for checkbox panel visibility.
+var exportCount = 0;
+var checkboxPanelVisible = true;
+var fluxPoints = null;
+
+// Enable drawing tools
+Map.drawingTools().setShown(true);
+
+// Create a toggle button for showing/hiding the checkbox panel.
+var toggleCheckboxPanelButton = ui.Button({
+  label: 'Hide Check Boxes',
+  style: {position: 'top-right', margin: '10px', fontSize: '10px'},
+  onClick: function() {
+    checkboxPanelVisible = !checkboxPanelVisible;
+    toggleCheckboxPanelButton.setLabel(checkboxPanelVisible ? 'Hide Checkboxes' : 'Show Checkboxes');
+    updateMap();
+  }
+});
+
+// Import the necessary UI components
+// Create a date slider to select a date range
+var dateSlider = ui.DateSlider({
+  start: '2019-01-01',
+  end: '2025-01-31',
+  value: ['2024-01-01', '2024-12-31'],
+  period: 1,
+  style: {width: '300px'}
+});
+
+// Add title to the date slider
+// (This label will be updated with the selected date in updateMap)
+var dateSliderTitle = ui.Label('Date Selection', {fontSize: '19px', fontWeight: 'bold', padding: '2px'});
+
+// Create a combined hour slider for GOES-16 and BC
+// This controls the hour of the day the GOES satellite imagery and Black Carbon data 
+var GOES16HourLabel = ui.Label('GMT Hour: GOES-16 and Surface BC', {fontWeight: 'bold', padding: '2px'});
+var GOES16HourSlider = ui.Slider({
+  min: 0,
+  max: 23,
+  value: 20,
+  step: 1,
+  style: {width: '300px'}
+});
+GOES16HourSlider.onChange(function(value) {
+  updateMap();
+});
+
+// Group date and time selection controls in a panel
+var dateSliderPanel = ui.Panel([
+  dateSliderTitle, 
+  dateSlider,
+  GOES16HourLabel,
+  GOES16HourSlider
+], ui.Panel.Layout.flow('vertical'));
+
+// Define visualization parameters for different data products
+// AOD (Aerosol Optical Depth) visualization parameters
+var AOD_band_viz = {
+  min: 0,
+  max: 3000,
+  palette: ['white', 'white', 'grey', 'cyan', 'green', 'red', 'black'],
+  opacity: 0.40
+};
+
+// AAI (Absorbing Aerosol Index) visualization parameters
+var AAI_band_viz = {
+  min: 0,
+  max: 10,
+  palette: ['white', 'white', 'purple', 'cyan', 'green', 'yellow', 'red'],
+  opacity: 0.30
+};
+
+// CO (Carbon Monoxide) visualization parameters
+var CO_band_viz = {
+  min: 0,
+  max: 0.1,
+  palette: ['white', 'white', 'white', 'cyan', 'green', 'yellow', 'red'],
+  opacity: 0.30
+};
+
+//************************************************************************************************
+//************************************************************************************************
+// The following section is a modified version of the script published by Justin Braaten in Medium:
+// "GOES in Earth Engine", October 25, 2021.
+// https://jstnbraaten.medium.com/goes-in-earth-engine-53fbc8783c16
+//
+
+// GOES satellite imagery visualization parameters
+var GOES_vis_params = {
+  bands: ['CMI_C02', 'CMI_GREEN', 'CMI_C01'],
+  min: 0.1,
+  max: 0.8,
+  gamma: 0.45,
+  dimensions: 600,
+  opacity: 1.0
+};
+
+//************************************************************************************************
+//************************************************************************************************
+
+// Create sliders for adjusting maximum values of AOD, AAI, and CO visualizations
+var AODSlider = ui.Slider({
+  min: 0,
+  max: 5000,
+  value: AOD_band_viz.max,
+  step: 100,
+  style: {width: '150px'}
+});
+AODSlider.onChange(function(value) {
+  AOD_band_viz.max = value;
+  updateMap();
+});
+
+var AAISlider = ui.Slider({
+  min: 0,
+  max: 20,
+  value: AAI_band_viz.max,
+  step: 1,
+  style: {width: '150px'}
+});
+AAISlider.onChange(function(value) {
+  AAI_band_viz.max = value;
+  updateMap();
+});
+ 
+var COSlider = ui.Slider({
+  min: 0.0,
+  max: 0.2,
+  value: CO_band_viz.max,
+  step: 0.01,
+  style: {width: '150px'}
+});
+COSlider.onChange(function(value) {
+  CO_band_viz.max = value;
+  updateMap();
+});
+
+// Create a slider for adjusting GOES-16 layer opacity
+var GOES16OpacitySlider = ui.Slider({
+  min: 0,
+  max: 1,
+  value: GOES_vis_params.opacity,
+  step: 0.1,
+  style: {width: '150px'}
+});
+GOES16OpacitySlider.onChange(function(value) {
+  GOES_vis_params.opacity = value;
+  updateMap();
+});
+
+// Create separate panels for each slider. We will place them horizontally along the bottom.
+var aodPanel = ui.Panel({
+  widgets: [
+    ui.Label('AOD Max', {fontWeight: 'bold'}),
+    AODSlider
+  ],
+  style: {
+    backgroundColor: 'white',
+    padding: '1px',
+    margin: '1px'
+  }
+});
+
+var aaiPanel = ui.Panel({
+  widgets: [
+    ui.Label('AAI Max', {fontWeight: 'bold'}),
+    AAISlider
+  ],
+  style: {
+    backgroundColor: 'white',
+    padding: '1px',
+    margin: '1px'
+  }
+});
+
+var coPanel = ui.Panel({
+  widgets: [
+    ui.Label('CO Max', {fontWeight: 'bold'}),
+    COSlider
+  ],
+  style: {
+    backgroundColor: 'white',
+    padding: '1px',
+    margin: '1px'
+  }
+});
+
+var goesOpacityPanel = ui.Panel({
+  widgets: [
+    ui.Label('GOES-16 Opacity', {fontWeight: 'bold'}),
+    GOES16OpacitySlider
+  ],
+  style: {
+    backgroundColor: 'white',
+    padding: '1px',
+    margin: '1px'
+  }
+});
+
+// Create a bottom bar panel to hold all four slider panels in a horizontal layout
+var bottomBarPanel = ui.Panel({
+  widgets: [
+    aodPanel,
+    aaiPanel,
+    coPanel,
+    goesOpacityPanel
+  ],
+  layout: ui.Panel.Layout.flow('horizontal'),
+  style: {
+    position: 'bottom-left',
+    backgroundColor: 'white',
+    padding: '1px'
+  }
+});
+
+// Store the current map view
+var currentView = {
+  center: Map.getCenter(),
+  zoom: Map.getZoom()
+};
+
+// Store checkbox states and layer references for all available data layers
+var checkboxStates = {
+  CO: false,
+  AOD: false,
+  AAI: false,
+  GOES: false,
+  HCHO: false,
+  NO2: false,
+  BC: false,
+  BCFluxVectors: false,
+  DustFluxVectors: false, 
+  CO95Mask: false,
+  CO99Mask: false,
+  BC95Mask: false,
+  BC99Mask: false,
+  FIRMS: false,
+  VIIRSfire: false,
+  PM25: false,
+  Ozone: false,
+  BC24Hour: false,
+  SmokePM25: false,
+  DustPM25: false,
+  SumMask: false
+};
+
+var layers = {
+  CO: null,
+  AOD: null,
+  AAI: null,
+  GOES: null,
+  HCHO: null,
+  NO2: null,
+  BC: null,
+  BCFluxVectors: null,
+  DustFluxVectors: null, 
+  CO95Mask: null,
+  CO99Mask: null,
+  BC95Mask: null,
+  BC99Mask: null,
+  FIRMS: null,
+  VIIRSfire: null,
+  PM25: null,
+  Ozone: null,
+  BC24Hour: null,
+  SmokePM25: null,
+  DustPM25: null,
+  SumMask: null
+};
+
+// Function to update the map based on selected dates and slider values
+// This is the main function that updates all layers when any parameter changes
+function updateMap() {
+  var range = dateSlider.getValue();
+  var startDate = ee.Date(range[0]);
+  var endDate = ee.Date(range[1]);
+  // Update the date slider panel title with the selected date in a friendly format.
+  dateSliderTitle.setValue('Date Selection: ' + startDate.format('MMMM d, YYYY').getInfo());
+  
+  // Get the hour chosen by the combined slider
+  var GOESHour = GOES16HourSlider.getValue();
+  var hourStr = (GOESHour < 10) ? '0' + GOESHour : GOESHour;
+  
+  // Extract the year for dynamic asset paths
+  var dateLabel = startDate.format('YYYY-MM-dd').getInfo();
+  var year = startDate.get('year').getInfo();
+
+  // GOES imagery integration, updated with hour slider
+  var GOEStime1 = startDate.format('YYYY-MM-dd').getInfo() + 'T' + hourStr + ':00';
+  var GOEStime2 = startDate.format('YYYY-MM-dd').getInfo() + 'T' + hourStr + ':59';
+
+//************************************************************************************************
+//************************************************************************************************
+// The following section is a modified version of the script published by Justin Braaten in Medium:
+// "GOES in Earth Engine", October 25, 2021.
+// https://jstnbraaten.medium.com/goes-in-earth-engine-53fbc8783c16
+//
+
+  // Function to apply scale and offset to the GOES imagery bands
+  var applyScaleAndOffset = function(img) {
+    var getFactorImg = function(factorNames) {
+      var factorList = img.toDictionary().select(factorNames).values();
+      return ee.Image.constant(factorList);
+    };
+    var scaleImg = getFactorImg(['CMI_C.._scale']);
+    var offsetImg = getFactorImg(['CMI_C.._offset']);
+    var scaled = img.select('CMI_C..').multiply(scaleImg).add(offsetImg);
+    return img.addBands({srcImg: scaled, overwrite: true});
+  };
+
+  // Adds a synthetic green band to GOES imagery for better visualization
+  var addGreenBand = function(img) {
+    var green = img.expression(
+      'CMI_GREEN = 0.45 * red + 0.10 * nir + 0.45 * blue',
+      {
+        blue: img.select('CMI_C01'),
+        red: img.select('CMI_C02'),
+        nir: img.select('CMI_C03')
+      }
+    );
+    return img.addBands(green);
+  };
+
+  // Scales selected bands for visualization
+  var scaleForVis = function(img) {
+    return img.select(['CMI_C01', 'CMI_GREEN', 'CMI_C02', 'CMI_C03', 'CMI_C05'])
+               .resample('bicubic')
+               .log10()
+               .interpolate([-1.6, 0.176], [0, 1], 'clamp')
+               .unmask(0)
+               .set(GOEStime1, img.get(GOEStime2));
+  };
+
+  // Wraps previous functions to process GOES imagery for visualization
+  var processForVis = function(img) {
+    return scaleForVis(addGreenBand(applyScaleAndOffset(img)));
+  };
+  
+//************************************************************************************************
+//************************************************************************************************
+
+// Get GOES-16 imagery for the selected date and hour
+var geosVisColstill = ee.ImageCollection('NOAA/GOES/16/MCMIPC')
+                              .filter(ee.Filter.bounds(geometry))
+                              .filterDate(GOEStime1, GOEStime2)
+                              .map(processForVis)
+                              .map(function(image) {
+                                return ee.Image(image).clip(geometry);
+                              });
+
+// Get Carbon Monoxide (CO) data from TROPOMI
+var CO_image = ee.ImageCollection('COPERNICUS/S5P/OFFL/L3_CO')
+    .filterDate(startDate, endDate)
+    .select('CO_column_number_density')
+    .mean();
+    
+// Apply the CO value threshold of 0.028 for visualization on the map  
+  var COimage = CO_image.updateMask(CO_image.gte(0.028));
+
+// Load the full MODIS collection so that both AOD and its QA band are available.
+var AODcollection = ee.ImageCollection('MODIS/061/MCD19A2_GRANULES')
+    .filterDate(startDate, endDate);
+
+// Helper function to extract QA bits from the QA band.
+function getQABits(image, start, end, newName) {
+  var pattern = 0;
+  for (var i = start; i <= end; i++) {
+    pattern += Math.pow(2, i);
+  }
+  return image.select([0], [newName])
+              .bitwiseAnd(pattern)
+              .rightShift(start);
+}
+
+// Function to mask out cloudy pixels using the QA band.
+// This function extracts bits 8-11 (internal cloud flag) and masks pixels where the flag is non-zero.
+function maskQuality(image) {
+  var QA = image.select('AOD_QA');
+  var internalQuality = getQABits(QA, 8, 11, 'internal_quality_flag');
+  return image.updateMask(internalQuality.eq(0));
+}
+
+// Create a cloud-masked AOD image collection, then select the Optical_Depth_055 band.
+var AODimage_masked = AODcollection
+    .map(maskQuality)
+    .select('Optical_Depth_055')
+    .mean();
+    
+  // Apply the AOD value threshold of 100 for visualization on the map
+  var AODimage = AODimage_masked.updateMask(AODimage_masked.gte(150));
+
+  // Get Absorbing Aerosol Index (AAI) data from TROPOMI
+  var AAI_image = ee.ImageCollection('COPERNICUS/S5P/OFFL/L3_AER_AI')
+    .select('absorbing_aerosol_index')
+    .filterDate(startDate, endDate)
+    .mean();
+  
+  // Apply the AAI value threshold of 1 for visualization on the map  
+  var AAIimage = AAI_image.updateMask(AAI_image.gte(1));
+
+  // Get Formaldehyde (HCHO) data from TROPOMIC
+  var HCHO_image = ee.ImageCollection('COPERNICUS/S5P/OFFL/L3_HCHO')
+    .select('tropospheric_HCHO_column_number_density')
+    .filterDate(startDate, endDate)
+    .mean();
+    
+  // Apply the HCHO value threshold of 0.00016 for visualization on the map  
+  var HCHOimage = HCHO_image.updateMask(HCHO_image.gte(0.00016));
+
+  // Get Nitrogen Dioxide (NO2) data from TROPOMI
+  var NO2_image = ee.ImageCollection('COPERNICUS/S5P/OFFL/L3_NO2')
+    .select('tropospheric_NO2_column_number_density')
+    .filterDate(startDate, endDate)
+    .mean();
+    
+  // Apply the NO2 value threshold of 0.000018 for visualization on the map  
+  var NO2image = NO2_image.updateMask(NO2_image.gte(0.000018));
+
+  // Get Surface Black Carbon (BC) data from MERRA-2 for the selected hour
+  var BCimage = ee.ImageCollection('NASA/GSFC/MERRA/aer/2')
+    .select('BCSMASS')
+    .filter(ee.Filter.eq('hour', GOESHour))
+    .filterDate(startDate, endDate)
+    .map(function(image) {
+      return image.multiply(1e09); // Convert to µg/m³
+    });
+    
+  // Get Surface Black Carbon (BC) data from MERRA-2 for GMT hour 20 for comparisons with percentiles
+  var BCimage20 = ee.ImageCollection('NASA/GSFC/MERRA/aer/2')
+    .select('BCSMASS')
+    .filter(ee.Filter.eq('hour', 20))  // filter for hour 20
+    .filterDate(startDate, endDate)
+    .map(function(image) {
+    return image.multiply(1e09); // Convert to µg/m³
+  });
+
+  // Define 24-hour Mean Black Carbon starting from hour 6 of startDate to hour 6 of next day
+  var startDateTime = startDate.advance(6, 'hour');
+  var endDateTime = startDate.advance(30, 'hour');
+  var BC24HourMeanImage = ee.ImageCollection('NASA/GSFC/MERRA/aer/2')
+      .select('BCSMASS')
+      .filterDate(startDateTime, endDateTime)
+      .map(function(image) {
+          return image.multiply(1e09); // Convert to µg/m³
+      })
+      .mean();
+
+  // Get the shape for the lower 48 states for clipping
+  var states = ee.FeatureCollection('USDOS/LSIB_SIMPLE/2017')
+                  .filter(ee.Filter.eq('country_na', 'United States'));
+
+  // Compute 24-hour Mean Smoke PM2.5 from MERRA-2 (BC + OC)
+  var SmokePM25Image = ee.ImageCollection('NASA/GSFC/MERRA/aer/2')
+    .select(['BCSMASS', 'OCSMASS'])
+    .filterDate(startDateTime, endDateTime)
+    .filterBounds(states)
+    .map(function(image) {
+      var bc = image.select('BCSMASS');
+      var oc = image.select('OCSMASS');
+      var sum = bc.add(oc).multiply(1.0e09); // Convert to µg/m³
+      return sum.rename('Smoke_PM25');
+    })
+    .mean()
+    .clip(states.geometry())
+    .setDefaultProjection('EPSG:4326', null, 20000);
+
+  // Aggregate and resample the smoke PM2.5 image for better visualization
+  var aggregatedSmokePM25Image = SmokePM25Image
+    .reduceResolution({
+      reducer: ee.Reducer.mean(),
+      maxPixels: 3200
+    })
+    .reproject({
+      crs: 'EPSG:4326',
+      scale: 40000
+    });
+
+  var resampledSmokePM25Image = aggregatedSmokePM25Image.resample('bicubic');
+  var resampledSmokePM25ImageStates = resampledSmokePM25Image.clip(states.geometry());
+
+  // Categorize Smoke PM2.5 into EPA AQI categories
+  var categorizedSmokePM25 = resampledSmokePM25ImageStates.expression(
+    "(b('Smoke_PM25') <= 12) ? 1" +
+    " : (b('Smoke_PM25') <= 35.4) ? 2" +
+    " : (b('Smoke_PM25') <= 55.4) ? 3" +
+    " : (b('Smoke_PM25') <= 150.4) ? 4" +
+    " : 5"
+  ).rename('Smoke_PM25_Cat');
+
+  // Visualization parameters for categorized smoke PM2.5
+  var categorizedSmokePM25_band_viz = {
+    min: 1,
+    max: 5,
+    palette: ['green', 'yellow', 'orange', 'red', 'violet'],
+    opacity: 0.40
+  };
+
+  // Compute 24-hour Mean Dust PM2.5 from MERRA-2
+  var DustPM25Image = ee.ImageCollection('NASA/GSFC/MERRA/aer/2')
+    .select('DUSMASS25')
+    .filterDate(startDateTime, endDateTime)
+    .map(function(image) {
+      var dust = image.select('DUSMASS25').multiply(1e09); // Convert to µg/m³
+      return dust.rename('Dust_PM25');
+    })
+    .mean();
+
+  // Smooth dust PM2.5 image with focal mean for better visualization
+  var smoothedDustPM25Image = DustPM25Image.focal_mean({
+    radius: 50000,
+    units: 'meters',
+    kernelType: 'circle'
+  });
+
+  var smoothedDustPM25ImageStates = smoothedDustPM25Image.clip(states.geometry());
+
+  // Categorize Dust PM2.5 into EPA AQI categories
+  var categorizedDustPM25 = smoothedDustPM25ImageStates.expression(
+    "(b('Dust_PM25') <= 12) ? 1" +
+    " : (b('Dust_PM25') <= 35.4) ? 2" +
+    " : (b('Dust_PM25') <= 55.4) ? 3" +
+    " : (b('Dust_PM25') <= 150.4) ? 4" +
+    " : 5"
+  ).rename('Dust_PM25_Cat');
+
+  // Use the same visualization parameters for dust as for smoke
+  var categorizedDustPM25_band_viz = categorizedSmokePM25_band_viz;
+  
+//************************************************************************************************
+//************************************************************************************************
+// Asset folder and file names will need to be updated if you are running your own installation of 
+// the Smoke Console.
+  // Synchronize TROPOMI CO Percentile Layers Projection for mask creation
+  
+  // For the 95th percentile asset:
+  var CO95Asset = ee.Image('projects/ee-preddyresearch/assets/CO95th_percentile_2019_2022');
+  var targetProjection95 = CO95Asset.projection();
+  var CO_95th = CO95Asset.reproject({crs: targetProjection95});
+  var CO95Mask = COimage.gte(CO_95th).clip(geometry).selfMask().rename('CO95Mask');
+
+  // For the 99th percentile asset:
+  var CO99Asset = ee.Image('projects/ee-preddyresearch/assets/CO99th_percentile_2019_2022');
+  var targetProjection99 = CO99Asset.projection();
+  var CO_99th = CO99Asset.reproject({crs: targetProjection99});
+  var CO99Mask = COimage.gte(CO_99th).clip(geometry).selfMask().rename('CO99Mask');
+
+  // Synchronize TROPOMI BC Percentile Layers Projection for mask creation
+  var targetProjection = BCimage20.first().projection();
+  var BC_95th = ee.Image('projects/ee-preddyresearch/assets/BC95th_percentile_2019_2022')
+      .reproject({crs: targetProjection});
+  var BCimageProjected = BCimage20.map(function(image) {
+    return image.reproject({crs: targetProjection});
+  });
+  var BC95Mask = BCimageProjected.mean().gte(BC_95th).clip(geometry).selfMask().rename('BC95Mask');
+
+  var BC_99th = ee.Image('projects/ee-preddyresearch/assets/BC99th_percentile_2019_2022')
+      .reproject({crs: targetProjection});
+  var BC99Mask = BCimageProjected.mean().gte(BC_99th).clip(geometry).selfMask().rename('BC99Mask');
+  
+//************************************************************************************************
+//************************************************************************************************  
+
+  // Get fire data from FIRMS
+  var firms = ee.ImageCollection('FIRMS')
+    .filterDate(startDate, endDate)
+    .select('T21');
+
+  // Get fire data from VIIRS
+  var VIIRS = ee.ImageCollection('NASA/LANCE/SNPP_VIIRS/C2')
+    .filterDate(startDate, endDate)
+    .select('Bright_ti4');
+
+  // Define visualization parameters for other data types
+  var HCHO_band_viz = {
+    min: 0.0,
+    max: 0.0004,
+    palette: ['white', 'white', 'white', 'cyan', 'green', 'yellow', 'red'],
+    opacity: 0.35
+  };    
+
+  var NO2_band_viz = {
+    min: 0,
+    max: 0.00005,
+    palette: ['white', 'white', 'cyan', 'green', 'yellow', 'red'],
+    opacity: 0.35
+  };
+
+  var BC_band_viz = {
+    min: 0.2,
+    max: 10.2,
+    palette: ['white', 'black', 'purple', 'cyan', 'green', 'yellow', 'red'],
+    opacity: 0.30
+  };
+
+  var BC24Hour_band_viz = {
+    min: 0.2,
+    max: 10.2,
+    palette: ['white', 'black', 'purple', 'cyan', 'green', 'yellow', 'red'],
+    opacity: 0.30
+  };
+
+  var CO95Mask_viz = {
+    palette: ['#8A2BE2'],
+    opacity: 0.28
+  };
+
+  var CO99Mask_viz = {
+    palette: ['#4169E1'],
+    opacity: 0.44
+  };
+
+  var BC95Mask_viz = {
+    palette: ['grey'],
+    opacity: 0.40
+  };
+
+  var BC99Mask_viz = {
+    palette: ['orange'],
+    opacity: 0.36
+  };
+
+  // Rename mask layers for consistent processing
+  var CO95MaskRenamed = CO95Mask.rename('mask');
+  var CO99MaskRenamed = CO99Mask.rename('mask');
+  var BC95MaskRenamed = BC95Mask.rename('mask');
+  var BC99MaskRenamed = BC99Mask.rename('mask');
+
+  // Create a sum of masks to identify areas with multiple flags
+  var masksCollection = ee.ImageCollection([
+    CO95MaskRenamed, 
+    CO99MaskRenamed, 
+    BC95MaskRenamed, 
+    BC99MaskRenamed
+  ]);
+  var sumOfMasks = masksCollection.reduce(ee.Reducer.sum());
+  var sumMask = sumOfMasks.gte(2).selfMask();
+  var sumMask_viz = {
+    palette: ['blue'],
+    opacity: 0.26
+  };
+
+  var firms_viz = {
+    min: 300,
+    max: 400,
+    palette: ['orange', 'red', 'red']
+  };
+
+  // Black Carbon Flux Vectors calculation and visualization
+  var bcFluxVizParams = {
+    min: 0,
+    max: 400000e-10,
+    palette: ['blue', 'cyan', 'green', 'yellow', 'red']
+  };
+  
+  var dataset = ee.ImageCollection('NASA/GSFC/MERRA/aer/2')
+      .select(['BCFLUXU', 'BCFLUXV'])
+      .filterDate(startDate, endDate);
+  var meanFlux = dataset.mean();
+  meanFlux = meanFlux.reproject({crs: 'EPSG:4326', scale: 50000});
+  var points = ee.FeatureCollection.randomPoints({region: geometry, points: 2800, seed: 0});
+  var samples = meanFlux.sampleRegions({collection: points, scale: 50000, geometries: true});
+  
+  // Create arrow vectors for BC flux visualization
+  var vectorsWithArrows = samples.map(function(feature) {
+    var u = ee.Number(feature.get('BCFLUXU'));
+    var v = ee.Number(feature.get('BCFLUXV'));
+    var magnitude = u.pow(2).add(v.pow(2)).sqrt();
+    var sourceCoord = feature.geometry().coordinates();
+    var uNorm = u.divide(magnitude);
+    var vNorm = v.divide(magnitude);
+    var fixedLength = 0.6;
+    var endCoord = [
+      ee.Number(sourceCoord.get(0)).add(uNorm.multiply(fixedLength)),
+      ee.Number(sourceCoord.get(1)).add(vNorm.multiply(fixedLength))
+    ];
+    var arrowheadLength = 0.2;
+    var arrowHalfWidth  = 0.1;
+    var arrowBase = [
+      ee.Number(endCoord[0]).subtract(uNorm.multiply(arrowheadLength)),
+      ee.Number(endCoord[1]).subtract(vNorm.multiply(arrowheadLength))
+    ];
+    var leftCoord = [
+      ee.Number(arrowBase[0]).subtract(vNorm.multiply(arrowHalfWidth)),
+      ee.Number(arrowBase[1]).add(uNorm.multiply(arrowHalfWidth))
+    ];
+    var rightCoord = [
+      ee.Number(arrowBase[0]).add(vNorm.multiply(arrowHalfWidth)),
+      ee.Number(arrowBase[1]).subtract(uNorm.multiply(arrowHalfWidth))
+    ];
+    var arrowHead = ee.Geometry.Polygon([[endCoord, leftCoord, rightCoord, endCoord]]);
+    var lineFeature = ee.Feature(ee.Geometry.LineString([sourceCoord, endCoord]), {magnitude: magnitude});
+    var arrowHeadFeature = ee.Feature(arrowHead, {magnitude: magnitude});
+    return ee.FeatureCollection([lineFeature, arrowHeadFeature]);
+  });
+  var flattenedVectors = vectorsWithArrows.flatten();
+  var arrowVectorImage = ee.Image().float().paint({
+    featureCollection: flattenedVectors,
+    color: 'magnitude',
+    width: 2
+  });
+
+  // Dust Flux Vectors calculation and visualization
+  var DUFLUXdataset = ee.ImageCollection('NASA/GSFC/MERRA/aer/2')
+    .select(['DUFLUXU', 'DUFLUXV'])
+    .filterDate(startDate, endDate);
+  var meanDUFlux = DUFLUXdataset.mean();
+  meanDUFlux = meanDUFlux.reproject({
+    crs: 'EPSG:4326',
+    scale: 100000
+  });
+if (fluxPoints === null) {
+  var gridScale = 100000;
+  fluxPoints = ee.Image.random().multiply(0).add(1).rename('constant').sample({
+    region: geometry,
+    scale: gridScale,
+    geometries: true
+  });
+}
+  var DUFluxSamples = meanDUFlux.sampleRegions({
+    collection: fluxPoints,
+    scale: 100000,
+    geometries: true
+  });
+  
+  // Create triangle vectors for dust flux visualization
+  var DUFluxVectors = DUFluxSamples.map(function(feature) {
+    var u = ee.Number(feature.get('DUFLUXU'));
+    var v = ee.Number(feature.get('DUFLUXV'));
+    var magnitude = u.pow(2).add(v.pow(2)).sqrt();
+    var geom = feature.geometry();
+    var uNorm = u.divide(magnitude);
+    var vNorm = v.divide(magnitude);
+    var length = 0.18;
+    var width = 0.10;
+    var apex = ee.Geometry.Point([
+      ee.Number(geom.coordinates().get(0)).add(uNorm.multiply(length)),
+      ee.Number(geom.coordinates().get(1)).add(vNorm.multiply(length))
+    ]);
+    var perpUNorm = vNorm.multiply(-1);
+    var perpVNorm = uNorm;
+    var baseLeft = ee.Geometry.Point([
+      ee.Number(geom.coordinates().get(0)).add(perpUNorm.multiply(width / 2)),
+      ee.Number(geom.coordinates().get(1)).add(perpVNorm.multiply(width / 2))
+    ]);
+    var baseRight = ee.Geometry.Point([
+      ee.Number(geom.coordinates().get(0)).subtract(perpUNorm.multiply(width / 2)),
+      ee.Number(geom.coordinates().get(1)).subtract(perpVNorm.multiply(width / 2))
+    ]);
+    var triangle = ee.Geometry.Polygon([
+      [baseLeft.coordinates(), baseRight.coordinates(), apex.coordinates()]
+    ]);
+    return ee.Feature(triangle, {
+      magnitude: magnitude
+    });
+  });
+  var fluxVectors = DUFluxVectors.filter(ee.Filter.gte('magnitude', 0.001));
+  var DUFluxVizParams = {
+    min: 0.0,
+    max: 0.0036,
+    palette: ['white', 'cyan', 'green', 'yellow', 'red']
+  };
+  var DUFluxVectorImage = ee.Image().float().paint({
+    featureCollection: fluxVectors,
+    color: 'magnitude',
+    width: 4
+  });
+
+  // Create UI checkboxes for each data layer
+  var COCheckbox = ui.Checkbox("TROPOMI CO", checkboxStates.CO);
+  var AODCheckbox = ui.Checkbox("MODIS AOD", checkboxStates.AOD);
+  var AAICheckbox = ui.Checkbox("TROPOMI AAI", checkboxStates.AAI);
+  var GOESCheckbox = ui.Checkbox("GOES-16", checkboxStates.GOES);
+  var HCHOCheckbox = ui.Checkbox("TROPOMI HCHO", checkboxStates.HCHO);
+  var NO2Checkbox = ui.Checkbox("TROPOMI NO2", checkboxStates.NO2);
+  var BCCheckbox = ui.Checkbox("Surface BC ", checkboxStates.BC);
+  var BCFluxVectorsCheckbox = ui.Checkbox("BC Flux Vectors", checkboxStates.BCFluxVectors);
+  var DustFluxVectorsCheckbox = ui.Checkbox("Dust Flux Vectors", checkboxStates.DustFluxVectors);
+  var CO95MaskCheckbox = ui.Checkbox("CO ≥ 95 Percentile", checkboxStates.CO95Mask);
+  var CO99MaskCheckbox = ui.Checkbox("CO ≥ 99 Percentile", checkboxStates.CO99Mask);
+  var BC95MaskCheckbox = ui.Checkbox("BC ≥ 95 Percentile", checkboxStates.BC95Mask);  
+  var BC99MaskCheckbox = ui.Checkbox("BC ≥ 99 Percentile", checkboxStates.BC99Mask);
+  var FIRMSCheckbox = ui.Checkbox("FIRMS Fire", checkboxStates.FIRMS);
+  var VIIRSfireCheckbox = ui.Checkbox("VIIRS Fire", checkboxStates.VIIRSfire);
+  var PM25Checkbox = ui.Checkbox("PM2.5", checkboxStates.PM25);
+  var OzoneCheckbox = ui.Checkbox("Ozone", checkboxStates.Ozone);
+  var sumMaskCheckbox = ui.Checkbox("Sum of Flags ≥2", checkboxStates.SumMask);
+  var BC24HourCheckbox = ui.Checkbox("24-hour Mean BC", checkboxStates.BC24Hour);
+  var SmokePM25Checkbox = ui.Checkbox("Smoke PM2.5", checkboxStates.SmokePM25);
+  var DustPM25Checkbox = ui.Checkbox("Dust PM2.5", checkboxStates.DustPM25);
+
+  // Group PM2.5 and Ozone checkboxes in a horizontal panel
+  var pmOzonePanel = ui.Panel([PM25Checkbox, OzoneCheckbox], ui.Panel.Layout.flow('horizontal'));
+
+  // Set up event handlers for each checkbox
+ 
+COCheckbox.onChange(function(checked) {
+    // Instantly update the checkbox state
+    checkboxStates.CO = checked;
+
+    // Temporarily disable to prevent excessive clicks
+    COCheckbox.setDisabled(true);  
+
+    // Slight delay allows UI to process checkbox state first before running updates
+    ui.util.setTimeout(function() {
+        updateMap();  // Execute map update
+        COCheckbox.setDisabled(false);  // Re-enable checkbox
+    }, 100);  // Short delay to prevent UI lag
+});
+
+AODCheckbox.onChange(function(checked) {
+    AODCheckbox.setDisabled(true);
+    checkboxStates.AOD = checked;
+
+    ui.util.setTimeout(function() {
+        updateMap();
+        AODCheckbox.setDisabled(false);
+    }, 100);
+});
+
+AAICheckbox.onChange(function(checked) {
+    AAICheckbox.setDisabled(true);
+    checkboxStates.AAI = checked;
+
+    ui.util.setTimeout(function() {
+        updateMap();
+        AAICheckbox.setDisabled(false);
+    }, 100);
+});
+
+GOESCheckbox.onChange(function(checked) {
+    GOESCheckbox.setDisabled(true);
+    checkboxStates.GOES = checked;
+
+    ui.util.setTimeout(function() {
+        updateMap();
+        GOESCheckbox.setDisabled(false);
+    }, 100);
+});
+
+HCHOCheckbox.onChange(function(checked) {
+    HCHOCheckbox.setDisabled(true);
+    checkboxStates.HCHO = checked;
+
+    ui.util.setTimeout(function() {
+        updateMap();
+        HCHOCheckbox.setDisabled(false);
+    }, 100);
+});
+
+NO2Checkbox.onChange(function(checked) {
+    NO2Checkbox.setDisabled(true);
+    checkboxStates.NO2 = checked;
+
+    ui.util.setTimeout(function() {
+        updateMap();
+        NO2Checkbox.setDisabled(false);
+    }, 100);
+});
+
+BCCheckbox.onChange(function(checked) {
+    BCCheckbox.setDisabled(true);
+    checkboxStates.BC = checked;
+
+    ui.util.setTimeout(function() {
+        updateMap();
+        BCCheckbox.setDisabled(false);
+    }, 100);
+});
+
+BCFluxVectorsCheckbox.onChange(function(checked) {
+    BCFluxVectorsCheckbox.setDisabled(true);
+    checkboxStates.BCFluxVectors = checked;
+
+    ui.util.setTimeout(function() {
+        updateMap();
+        BCFluxVectorsCheckbox.setDisabled(false);
+    }, 100);
+});
+
+DustFluxVectorsCheckbox.onChange(function(checked) {
+    DustFluxVectorsCheckbox.setDisabled(true);
+    checkboxStates.DustFluxVectors = checked;
+
+    ui.util.setTimeout(function() {
+        updateMap();
+        DustFluxVectorsCheckbox.setDisabled(false);
+    }, 100);
+});
+
+CO95MaskCheckbox.onChange(function(checked) {
+    CO95MaskCheckbox.setDisabled(true);
+    checkboxStates.CO95Mask = checked;
+
+    ui.util.setTimeout(function() {
+        updateMap();
+        CO95MaskCheckbox.setDisabled(false);
+    }, 100);
+});
+
+CO99MaskCheckbox.onChange(function(checked) {
+    CO99MaskCheckbox.setDisabled(true);
+    checkboxStates.CO99Mask = checked;
+
+    ui.util.setTimeout(function() {
+        updateMap();
+        CO99MaskCheckbox.setDisabled(false);
+    }, 100);
+});
+
+BC95MaskCheckbox.onChange(function(checked) {
+    BC95MaskCheckbox.setDisabled(true);
+    checkboxStates.BC95Mask = checked;
+
+    ui.util.setTimeout(function() {
+        updateMap();
+        BC95MaskCheckbox.setDisabled(false);
+    }, 100);
+});
+
+BC99MaskCheckbox.onChange(function(checked) {
+    BC99MaskCheckbox.setDisabled(true);
+    checkboxStates.BC99Mask = checked;
+
+    ui.util.setTimeout(function() {
+        updateMap();
+        BC99MaskCheckbox.setDisabled(false);
+    }, 100);
+});
+
+FIRMSCheckbox.onChange(function(checked) {
+    FIRMSCheckbox.setDisabled(true);
+    checkboxStates.FIRMS = checked;
+
+    ui.util.setTimeout(function() {
+        updateMap();
+        FIRMSCheckbox.setDisabled(false);
+    }, 100);
+});
+
+VIIRSfireCheckbox.onChange(function(checked) {
+    VIIRSfireCheckbox.setDisabled(true);
+    checkboxStates.VIIRSfire = checked;
+
+    ui.util.setTimeout(function() {
+        updateMap();
+        VIIRSfireCheckbox.setDisabled(false);
+    }, 100);
+});
+
+PM25Checkbox.onChange(function(checked) {
+    PM25Checkbox.setDisabled(true);
+    checkboxStates.PM25 = checked;
+
+    ui.util.setTimeout(function() {
+        updateMap();
+        PM25Checkbox.setDisabled(false);
+    }, 100);
+});
+
+OzoneCheckbox.onChange(function(checked) {
+    OzoneCheckbox.setDisabled(true);
+    checkboxStates.Ozone = checked;
+
+    ui.util.setTimeout(function() {
+        updateMap();
+        OzoneCheckbox.setDisabled(false);
+    }, 100);
+});
+
+sumMaskCheckbox.onChange(function(checked) {
+    sumMaskCheckbox.setDisabled(true);
+    checkboxStates.SumMask = checked;
+
+    ui.util.setTimeout(function() {
+        updateMap();
+        sumMaskCheckbox.setDisabled(false);
+    }, 100);
+});
+
+BC24HourCheckbox.onChange(function(checked) {
+    BC24HourCheckbox.setDisabled(true);
+    checkboxStates.BC24Hour = checked;
+
+    ui.util.setTimeout(function() {
+        updateMap();
+        BC24HourCheckbox.setDisabled(false);
+    }, 100);
+});
+
+SmokePM25Checkbox.onChange(function(checked) {
+    SmokePM25Checkbox.setDisabled(true);
+    checkboxStates.SmokePM25 = checked;
+
+    ui.util.setTimeout(function() {
+        updateMap();
+        SmokePM25Checkbox.setDisabled(false);
+    }, 100);
+});
+
+DustPM25Checkbox.onChange(function(checked) {
+    DustPM25Checkbox.setDisabled(true);
+    checkboxStates.DustPM25 = checked;
+
+    ui.util.setTimeout(function() {
+        updateMap();
+        DustPM25Checkbox.setDisabled(false);
+    }, 100);
+});
+
+  // Create panel to hold all layer checkboxes
+  var checkboxPanel = ui.Panel({
+    widgets: [COCheckbox, AODCheckbox, AAICheckbox, GOESCheckbox, HCHOCheckbox, NO2Checkbox, BCCheckbox, BC24HourCheckbox, SmokePM25Checkbox, DustPM25Checkbox, BCFluxVectorsCheckbox, DustFluxVectorsCheckbox, CO95MaskCheckbox, CO99MaskCheckbox, BC95MaskCheckbox, BC99MaskCheckbox, sumMaskCheckbox, FIRMSCheckbox, VIIRSfireCheckbox, pmOzonePanel],
+    style: {
+      position: 'top-left',
+      width: '180px',
+      padding: '10px',
+      backgroundColor: 'white',
+      fontSize: '8px',
+    }
+  });
+
+  // Add date label to the top of the checkbox panel
+  var titleLabelA = ui.Label({
+    value: 'Date: ' + dateLabel,
+    style: {
+      fontWeight: 'bold',
+      textAlign: 'left',
+      margin: '5px 0',
+      fontSize: '16px'
+    }
+  });
+
+  checkboxPanel.insert(0, titleLabelA);
+
+  // Add export button to the checkbox panel
+  var exportButton = ui.Button({
+    label: 'Export CSV for ROI',
+    style: {
+      fontSize: '12px',
+      padding: '4px',
+      margin: '5px 0px',
+      stretch: 'horizontal',
+      textAlign: 'center'
+    },
+    onClick: function() {
+      if (Map.drawingTools().layers().length() === 0) {
+        alert('Please draw a rectangle to define the region of interest (ROI) using the drawing tools.');
+      } else {
+        runAnalysis();
+      }
+    }
+  });
+
+  checkboxPanel.add(exportButton);
+
+  // Clear the map and add UI elements
+  Map.clear();
+  Map.add(toggleCheckboxPanelButton);
+  if (checkboxPanelVisible) {
+    Map.add(checkboxPanel);
+  }
+  dateSliderPanel.style().set({
+    position: 'top-center',
+    margin: '10px'
+  });
+  Map.add(dateSliderPanel);
+  Map.add(bottomBarPanel); 
+
+  // Add title to the map
+  var titleLabel3 = ui.Label({
+    value: 'University of Wisconsin/HAQAST Smoke Console - Open Map Window to Full Extent and Choose Full Screen',
+    style: {
+      fontWeight: 'bold',
+      fontSize: '18px',
+      margin: '10px 0',
+    },
+  });
+
+  Map.add(titleLabel3);
+
+  dateSliderPanel.style().set({
+    position: 'bottom-right',
+    margin: '10px'
+  });
+
+  // Function to create a legend for a data layer
+  function createLegend(title, vizParams) {
+    var colorBar = ui.Thumbnail({
+      image: ee.Image.pixelLonLat().select(0),
+      params: {
+        bbox: [0, 0, 1, 0.1],
+        dimensions: '80x10',
+        format: 'png',
+        min: 0,
+        max: 1,
+        palette: vizParams.palette,
+      },
+      style: {stretch: 'horizontal', margin: '0px 8px', maxHeight: '24px'},
+    });
+
+    var legendLabels = ui.Panel({
+      widgets: [
+        ui.Label(vizParams.min !== undefined ? vizParams.min : '', {margin: '4px 8px'}),
+        ui.Label(
+          (vizParams.max !== undefined && vizParams.min !== undefined) ?
+          ((vizParams.max - vizParams.min) / 2 + vizParams.min).toString() : '',
+          {margin: '4px 8px', textAlign: 'center', stretch: 'horizontal'}
+        ),
+        ui.Label(vizParams.max !== undefined ? vizParams.max : '', {margin: '4px 8px'})
+      ],
+      layout: ui.Panel.Layout.flow('horizontal')
+    });
+
+    var legendTitle = ui.Label({
+      value: title,
+      style: {fontWeight: 'bold'}
+    });
+
+    return ui.Panel([legendTitle, colorBar, legendLabels]);
+  }
+
+  // Create legends for all data types
+  var COLegend = createLegend('TROPOMI CO (mol/m²)', CO_band_viz);
+  var AODLegend = createLegend('MODIS AOD*1000', AOD_band_viz);
+  var AAILegend = createLegend('TROPOMI AAI', AAI_band_viz);
+  var HCHOLegend = createLegend('TROPOMI HCHO (mol/m²)', HCHO_band_viz);
+  var NO2Legend = createLegend('TROPOMI NO₂ (mol/m²)', NO2_band_viz);
+  var BCLegend = createLegend('Surface BC (µg/m³)', BC_band_viz);
+  var BC24HourLegend = createLegend('24-hour Mean BC (µg/m³)', BC24Hour_band_viz);
+  var BCFluxVectorsLegend = createLegend('BC Flux Vectors (kg/m/s)', bcFluxVizParams);
+  var DustFluxVectorsLegend = createLegend('Dust Flux Vectors (kg/m/s)', DUFluxVizParams); 
+  var CO95MaskLegend = createLegend('CO ≥ 95th Percentile', CO95Mask_viz);
+  var CO99MaskLegend = createLegend('CO ≥ 99th Percentile', CO99Mask_viz);
+  var BC95MaskLegend = createLegend('BC ≥ 95th Percentile', BC95Mask_viz);  
+  var BC99MaskLegend = createLegend('BC ≥ 99th Percentile', BC99Mask_viz);
+  var sumMaskLegend = createLegend('Sum of Flags ≥2', sumMask_viz);
+  var FIRMSLegend = createLegend('FIRMS Fire (K)', firms_viz);
+  var VIIRSfireLegend = createLegend('VIIRS Fire (K)', firms_viz);
+
+  // Create a panel to hold legends for active layers
+  var legendPanel = ui.Panel({
+    style: {
+      position: 'bottom-right',
+      padding: '8px 15px',
+      width: '220px',
+      backgroundColor: 'white'
+    }
+  });
+
+  // Function to update legends based on active layers
+  function updateLegendPanel() {
+    legendPanel.clear();
+    if (checkboxStates.CO) legendPanel.add(COLegend);
+    if (checkboxStates.AOD) legendPanel.add(AODLegend);
+    if (checkboxStates.AAI) legendPanel.add(AAILegend);
+    if (checkboxStates.HCHO) legendPanel.add(HCHOLegend);
+    if (checkboxStates.NO2) legendPanel.add(NO2Legend);
+    if (checkboxStates.BC) legendPanel.add(BCLegend);
+    if (checkboxStates.BC24Hour) legendPanel.add(BC24HourLegend);
+    if (checkboxStates.BCFluxVectors) legendPanel.add(BCFluxVectorsLegend);
+    if (checkboxStates.DustFluxVectors) legendPanel.add(DustFluxVectorsLegend); 
+    if (checkboxStates.CO95Mask) legendPanel.add(CO95MaskLegend);
+    if (checkboxStates.CO99Mask) legendPanel.add(CO99MaskLegend);
+    if (checkboxStates.BC95Mask) legendPanel.add(BC95MaskLegend);  
+    if (checkboxStates.BC99Mask) legendPanel.add(BC99MaskLegend);
+    if (checkboxStates.SumMask) legendPanel.add(sumMaskLegend);
+    if (checkboxStates.FIRMS) legendPanel.add(FIRMSLegend);
+    if (checkboxStates.VIIRSfire) legendPanel.add(VIIRSfireLegend);
+  }
+
+  // Create a panel for combined legends (PM2.5 and Ozone)
+  var combinedLegendPanel = ui.Panel({
+    style: {
+      position: 'bottom-center',
+      padding: '8px 15px',
+      backgroundColor: 'white'
+    }
+  });
+
+  // Function to update combined legends based on active layers
+  function updateCombinedLegendPanel() {
+    combinedLegendPanel.clear();
+    if (checkboxStates.PM25) {
+      combinedLegendPanel.add(ui.Label('24-hour Average PM2.5 (µg/m³)', {fontWeight: 'bold'}));
+      combinedLegendPanel.add(ui.Panel([
+          ui.Label('0-12', {backgroundColor: 'green', padding: '4px', margin: '0 2px'}),
+          ui.Label('12.1-35.4', {backgroundColor: 'yellow', padding: '4px', margin: '0 2px'}),
+          ui.Label('35.5-55.4', {backgroundColor: 'orange', padding: '4px', margin: '0 2px'}),
+          ui.Label('55.5-150.4', {backgroundColor: 'red', padding: '4px', margin: '0 2px'}),
+          ui.Label('150.5+', {backgroundColor: 'violet', padding: '4px', margin: '0 2px'})
+        ], ui.Panel.Layout.Flow('horizontal')));
+    }
+    if (checkboxStates.SmokePM25) {
+      combinedLegendPanel.add(ui.Label('24-hour Average Smoke PM2.5 (µg/m³)', {fontWeight: 'bold'}));
+      combinedLegendPanel.add(ui.Panel([
+        ui.Label('0-12', {backgroundColor: 'green', padding: '4px', margin: '0 2px'}),
+        ui.Label('12.1-35.4', {backgroundColor: 'yellow', padding: '4px', margin: '0 2px'}),
+        ui.Label('35.5-55.4', {backgroundColor: 'orange', padding: '4px', margin: '0 2px'}),
+        ui.Label('55.5-150.4', {backgroundColor: 'red', padding: '4px', margin: '0 2px'}),
+        ui.Label('>150.4', {backgroundColor: 'violet', padding: '4px', margin: '0 2px'})
+      ], ui.Panel.Layout.Flow('horizontal')));
+    }
+    if (checkboxStates.DustPM25) {
+      combinedLegendPanel.add(ui.Label('24-hour Average Dust PM2.5 (µg/m³)', {fontWeight: 'bold'}));
+      combinedLegendPanel.add(ui.Panel([
+        ui.Label('0-12', {backgroundColor: 'green', padding: '4px', margin: '0 2px'}),
+        ui.Label('12.1-35.4', {backgroundColor: 'yellow', padding: '4px', margin: '0 2px'}),
+        ui.Label('35.5-55.4', {backgroundColor: 'orange', padding: '4px', margin: '0 2px'}),
+        ui.Label('55.5-150.4', {backgroundColor: 'red', padding: '4px', margin: '0 2px'}),
+        ui.Label('>150.4', {backgroundColor: 'violet', padding: '4px', margin: '0 2px'})
+      ], ui.Panel.Layout.Flow('horizontal')));
+    }
+    if (checkboxStates.Ozone) {
+      combinedLegendPanel.add(ui.Label('Daily Max 8-hour Ozone (ppb)', {fontWeight: 'bold'}));
+      combinedLegendPanel.add(ui.Panel([
+        ui.Label('Ozone:', {margin: '4px 8px'}),
+        ui.Label('0-54', {backgroundColor: 'green', padding: '4px', margin: '0 2px'}),
+        ui.Label('55-70', {backgroundColor: 'yellow', padding: '4px', margin: '0 2px'}),
+        ui.Label('71-85', {backgroundColor: 'orange', padding: '4px', margin: '0 2px'}),
+        ui.Label('86-105', {backgroundColor: 'red', padding: '4px', margin: '0 2px'}),
+        ui.Label('106+', {backgroundColor: 'violet', padding: '4px', margin: '0 2px'})
+      ], ui.Panel.Layout.Flow('horizontal')));
+    }
+  }
+
+  // Add legend panels to the map
+  Map.add(legendPanel);
+  Map.add(combinedLegendPanel);
+  
+  // Update legend displays
+  updateLegendPanel();
+  updateCombinedLegendPanel();
+  
+  // Initialize all layers
+  function updateAllLayers() {
+    Map.clear();
+    
+    // Define order of layers (bottom to top) and include new cloud mask layers
+    var layerOrder = ['GOES', 'CO', 'AAI', 'AOD', 'HCHO', 'NO2', 'BC', 'BC24Hour', 'SmokePM25', 'DustPM25', 'BC95Mask', 'BC99Mask', 'CO95Mask', 'CO99Mask', 'SumMask', 'FIRMS', 'VIIRSfire', 'PM25', 'Ozone', 'BCFluxVectors', 'DustFluxVectors'];
+    layerOrder.forEach(function(key) {
+      if (checkboxStates[key]) {
+        switch(key) {
+          case 'GOES':
+            layers.GOES = ui.Map.Layer(geosVisColstill, GOES_vis_params, "GOES 16 (" + dateLabel + ")");
+            Map.add(layers.GOES);
+            break;
+          case 'CO':
+            updateLayerVisibility('CO', true, COimage, CO_band_viz, "TROPOMI CO (" + dateLabel + ")");
+            break;
+          case 'AOD':
+            updateLayerVisibility('AOD', true, AODimage, AOD_band_viz, "MODIS AOD (" + dateLabel + ")");
+            break;
+          case 'AAI':
+            updateLayerVisibility('AAI', true, AAIimage, AAI_band_viz, "TROPOMI AAI (" + dateLabel + ")");
+            break;
+          case 'HCHO':
+            updateLayerVisibility('HCHO', true, HCHOimage, HCHO_band_viz, "TROPOMI HCHO (" + dateLabel + ")");
+            break;
+          case 'NO2':
+            updateLayerVisibility('NO2', true, NO2image, NO2_band_viz, "TROPOMI NO₂ (" + dateLabel + ")");
+            break;
+          case 'BC':
+            updateLayerVisibility('BC', true, BCimage, BC_band_viz, "BCSMASS at T" + hourStr + " (" + dateLabel + ")");
+            break;
+          case 'BC24Hour':
+            updateLayerVisibility('BC24Hour', true, BC24HourMeanImage, BC24Hour_band_viz, "24-hour Mean BC (" + dateLabel + ")");
+            break;
+          case 'SmokePM25':
+            updateLayerVisibility('SmokePM25', true, categorizedSmokePM25.clip(states), categorizedSmokePM25_band_viz, "Smoke PM2.5 (" + dateLabel + ")");
+            break;
+          case 'DustPM25':
+            updateLayerVisibility('DustPM25', true, categorizedDustPM25.clip(states), categorizedDustPM25_band_viz, "Dust PM2.5 (" + dateLabel + ")");
+            break;
+          case 'BCFluxVectors':
+            if (checkboxStates.BCFluxVectors) {
+              if (layers['BCFluxVectors']) {
+                Map.remove(layers['BCFluxVectors']);
+                layers['BCFluxVectors'] = null;
+              }
+              layers['BCFluxVectors'] = ui.Map.Layer(arrowVectorImage, bcFluxVizParams, "Black Carbon Flux Vectors");
+              Map.add(layers['BCFluxVectors']);
+            } else {
+              if (layers['BCFluxVectors']) {
+                Map.remove(layers['BCFluxVectors']);
+                layers['BCFluxVectors'] = null;
+              }
+            }
+            break;
+          case 'DustFluxVectors':
+            if (checkboxStates.DustFluxVectors) {
+              if (layers['DustFluxVectors']) {
+                Map.remove(layers['DustFluxVectors']);
+                layers['DustFluxVectors'] = null;
+              }
+              layers['DustFluxVectors'] = ui.Map.Layer(DUFluxVectorImage, DUFluxVizParams, "Dust Flux Vectors");
+              Map.add(layers['DustFluxVectors']);
+            } else {
+              if (layers['DustFluxVectors']) {
+                Map.remove(layers['DustFluxVectors']);
+                layers['DustFluxVectors'] = null;
+              }
+            }
+            break;
+          case 'BC95Mask':
+            updateLayerVisibility('BC95Mask', true, BC95Mask, BC95Mask_viz, "BC ≥ 95 Percentile (" + dateLabel + ") ");
+            break;
+          case 'BC99Mask':
+            updateLayerVisibility('BC99Mask', true, BC99Mask, BC99Mask_viz, "BC ≥ 99 Percentile (" + dateLabel + ") ");
+            break;
+          case 'CO95Mask':
+            updateLayerVisibility('CO95Mask', true, CO95Mask, CO95Mask_viz, "CO ≥ 95 Percentile (" + dateLabel + ") ");
+            break;
+          case 'CO99Mask':
+            updateLayerVisibility('CO99Mask', true, CO99Mask, CO99Mask_viz, "CO ≥ 99 Percentile (" + dateLabel + ") ");
+            break;
+          case 'SumMask':
+            updateLayerVisibility('SumMask', true, sumMask, sumMask_viz, "Sum of Flags ≥2 (" + dateLabel + ")");
+            break;
+          case 'FIRMS':
+            updateLayerVisibility('FIRMS', true, firms, firms_viz, "FIRMS Fire (" + dateLabel + ")");
+            break;
+          case 'VIIRSfire':
+             updateLayerVisibility('VIIRSfire', true, VIIRS, firms_viz, "VIIRS Fire (" + dateLabel + ")");
+            break;
+          case 'PM25':
+            addPM25Layer(dateLabel);
+            break;
+          case 'Ozone':
+            addOzoneLayer(dateLabel);
+            break;
+        }
+      }
+    });
+    
+    // Set map style to TERRAIN
+    Map.setOptions('TERRAIN');
+    
+    // Add UI elements to the map
+    Map.add(toggleCheckboxPanelButton);
+    if (checkboxPanelVisible) {
+      Map.add(checkboxPanel);
+    }
+    Map.add(dateSliderPanel);
+    Map.add(bottomBarPanel);
+    Map.add(titleLabel3);
+    Map.add(legendPanel);
+    Map.add(combinedLegendPanel);
+
+    // Update legend displays
+    updateLegendPanel();
+    updateCombinedLegendPanel();
+  }
+  updateAllLayers();
+}
+
+// Function to update a single layer's visibility
+function updateLayerVisibility(layerName, checked, image, vizParams, label) {
+  if (checked) {
+    if (layers[layerName]) {
+      Map.remove(layers[layerName]);
+    }
+    layers[layerName] = ui.Map.Layer(image, vizParams, label);
+    Map.add(layers[layerName]);
+  } else if (layers[layerName]) {
+    Map.remove(layers[layerName]);
+    layers[layerName] = null;
+  }
+}
+
+//************************************************************************************************
+//************************************************************************************************
+// Asset folder and file names will need to be updated if you are running your own installation of 
+// the Smoke Console.
+
+// Function to add PM2.5 point data layer from EPA monitors
+function addPM25Layer(date) {
+  var year = date.split('-')[0];
+  var pm25Data = ee.FeatureCollection('projects/ee-preddyresearch/assets/daily_88101_' + year);
+  var filteredData = pm25Data.filter(ee.Filter.eq('Date Local', date))
+    .filter(ee.Filter.neq('Event Type', 'Excluded'))
+    .filter(ee.Filter.neq('Sample Duration', '24-HR BLK AVG'));
+
+//************************************************************************************************
+//************************************************************************************************
+
+  // Create styled points for PM2.5 monitors
+  var createPoint = function(feature) {
+    var pm25Value = ee.Number(feature.get('Arithmetic Mean'));
+    var color = ee.Algorithms.If(pm25Value.lte(12), 'green',
+                 ee.Algorithms.If(pm25Value.lte(35.4), 'yellow',
+                 ee.Algorithms.If(pm25Value.lte(55.4), 'orange',
+                 ee.Algorithms.If(pm25Value.lte(150.4), 'red', 'violet'))));
+    var size = ee.Number(pm25Value).divide(5).add(4).clamp(4, 16);
+    
+    return ee.Feature(ee.Geometry.Point([feature.get('Longitude'), feature.get('Latitude')]), {
+      'value': pm25Value
+    }).set('style', {
+      'color': color,
+      'fillColor': color,
+      'fillOpacity': 0.99,
+      'width': size,
+      'height': size,
+      'shape': 'square'
+    });
+  };
+
+  var points = filteredData.map(createPoint);
+  Map.addLayer(points.style({styleProperty: 'style'}), {}, 'PM2.5 Levels');
+}
+
+//************************************************************************************************
+//************************************************************************************************
+// Asset folder and file names will need to be updated if you are running your own installation of 
+// the Smoke Console.
+
+// Function to add Ozone point data layer from EPA monitors
+function addOzoneLayer(date) {
+  var year = date.split('-')[0];
+  var ozoneData = ee.FeatureCollection('projects/ee-preddyresearch/assets/daily_44201_' + year);
+  var filteredData = ozoneData.filter(ee.Filter.eq('Date Local', date))
+    .filter(ee.Filter.neq('Event Type', 'Excluded'));
+
+//************************************************************************************************
+//************************************************************************************************
+
+  // Create styled points for ozone monitors
+  var createPoint = function(feature) {
+    var ozoneValue = ee.Number(feature.get('1st Max Value')).multiply(1000);
+    var color = ee.Algorithms.If(ozoneValue.lte(54), 'green',
+                 ee.Algorithms.If(ozoneValue.lte(70), 'yellow',
+                 ee.Algorithms.If(ozoneValue.lte(85), 'orange',
+                 ee.Algorithms.If(ozoneValue.lte(105), 'red', 'violet'))));
+    var size = ee.Number(ozoneValue).divide(10).add(4).clamp(4, 16);
+    
+    return ee.Feature(ee.Geometry.Point([feature.get('Longitude'), feature.get('Latitude')]), {
+      'value': ozoneValue
+    }).set('style', {
+      'color': color,
+      'fillColor': color,
+      'fillOpacity': 0.99,
+      'width': size,
+      'height': size,
+      'shape': 'square'
+    });
+  };
+
+  var points = filteredData.map(createPoint);
+  Map.addLayer(points.style({styleProperty: 'style'}), {}, 'Ozone Levels');
+}
+
+// Function to run analysis and export data for a user-defined region of interest
+function runAnalysis() {
+  // Get the drawn geometry from the map
+  var geometry = Map.drawingTools().layers().get(0).getEeObject();
+  
+  // Extract coordinates of the drawn rectangle
+  var coords = ee.List(geometry.coordinates().get(0));
+  var nw = ee.List(coords.get(0));
+  var ne = ee.List(coords.get(1)); 
+  var se = ee.List(coords.get(2));
+  var sw = ee.List(coords.get(3));
+  
+  // Generate a list of years to analyze
+  var years = ee.List.sequence(2019, 2024);
+
+  // Create a list of dates for May-September for all years
+  var dateList = years.map(function(year) {
+    var startDate = ee.Date.fromYMD(year, 5, 1);
+    var endDate = ee.Date.fromYMD(year, 9, 30);
+    var nDays = endDate.difference(startDate, 'day').add(1);
+    return ee.List.sequence(0, nDays.subtract(1)).map(function(day) {
+      return startDate.advance(day, 'day');
+    });
+  }).flatten();
+
+  // Get MERRA-2 Black Carbon data
+  var BCSMASS_collection = ee.ImageCollection('NASA/GSFC/MERRA/aer/2')
+    .filterBounds(geometry)
+    .filter(ee.Filter.calendarRange(5, 9, 'month'))
+    .filter(ee.Filter.calendarRange(2019, 2024, 'year'))
+    .select('BCSMASS');
+
+  var targetProjection = BCSMASS_collection.first().projection();
+
+  // Synchronize TROPOMI CO Percentile Layers Projection for mask creation
+
+//************************************************************************************************
+//************************************************************************************************
+// Asset folder and file names will need to be updated if you are running your own installation of 
+// the Smoke Console.
+
+  // For the 95th percentile asset:
+  var CO95Asset = ee.Image('projects/ee-preddyresearch/assets/CO95th_percentile_2019_2022');
+  var targetProjection95 = CO95Asset.projection();
+  
+  // For the 99th percentile asset:
+  var CO99Asset = ee.Image('projects/ee-preddyresearch/assets/CO99th_percentile_2019_2022');
+  var targetProjection99 = CO99Asset.projection();
+ 
+
+  // Synchronize TROPOMI CO Percentile Layers Projection for export
+  var CO_collection = ee.ImageCollection('COPERNICUS/S5P/OFFL/L3_CO')
+    .filterBounds(geometry)
+    .filter(ee.Filter.calendarRange(5, 9, 'month'))
+    .filter(ee.Filter.calendarRange(2019, 2024, 'year'))
+    .select('CO_column_number_density');
+  
+  var CO95th_percentile = ee.Image('projects/ee-preddyresearch/assets/CO95th_percentile_2019_2022')
+      .reproject({crs: targetProjection95});
+  var CO99th_percentile = ee.Image('projects/ee-preddyresearch/assets/CO99th_percentile_2019_2022')
+      .reproject({crs: targetProjection99});
+
+//************************************************************************************************
+//************************************************************************************************
+
+  // Calculate mean percentile values for the selected region
+  var co95 = CO95th_percentile.reduceRegion({
+    reducer: ee.Reducer.mean(),
+    geometry: geometry,
+    scale: 1000,
+    maxPixels: 1e13
+  }).values().get(0);
+
+  var co99 = CO99th_percentile.reduceRegion({
+    reducer: ee.Reducer.mean(),
+    geometry: geometry,
+    scale: 1000,
+    maxPixels: 1e13
+  }).values().get(0);
+  
+//************************************************************************************************
+//************************************************************************************************
+// Asset folder and file names will need to be updated if you are running your own installation of 
+// the Smoke Console.  
+  
+    // Reproject BC Percentile Layers
+  var BCSMASS95th_percentile = ee.Image('projects/ee-preddyresearch/assets/BC95th_percentile_2019_2022')
+    .reproject({
+      crs: targetProjection
+    });
+  var BCSMASS99th_percentile = ee.Image('projects/ee-preddyresearch/assets/BC99th_percentile_2019_2022')
+    .reproject({
+      crs: targetProjection
+    });
+
+//************************************************************************************************
+//************************************************************************************************
+
+  var bc95 = BCSMASS95th_percentile.reduceRegion({
+    reducer: ee.Reducer.mean(),
+    geometry: geometry,
+    scale: 1000,
+    maxPixels: 1e13
+  }).values().get(0);
+
+  var bc99 = BCSMASS99th_percentile.reduceRegion({
+    reducer: ee.Reducer.mean(),
+    geometry: geometry,
+    scale: 1000,
+    maxPixels: 1e13
+  }).values().get(0);
+
+  // Function to get CO value for a specific date
+  var getCOValue = function(date) {
+    var filteredCollectionCO = CO_collection.filterDate(date, ee.Date(date).advance(1, 'day'));
+    var value = filteredCollectionCO.mean().reduceRegion({
+      reducer: ee.Reducer.mean(),
+      geometry: geometry,
+      scale: 1000,
+      maxPixels: 1e13
+    }).get('CO_column_number_density');
+    return ee.Algorithms.If(filteredCollectionCO.size().gt(0), value, null);
+  };
+  
+// Load the NO2 data collection and filter by geometry, month, and year.
+var NO2_collection = ee.ImageCollection('COPERNICUS/S5P/OFFL/L3_NO2')
+  .filterBounds(geometry)
+  .filter(ee.Filter.calendarRange(5, 9, 'month'))
+  .filter(ee.Filter.calendarRange(2019, 2024, 'year'));
+
+// Define a function to extract the daily mean NO2 over the study area.
+var getNO2Value = function(date) {
+  date = ee.Date(date);
+  // Filter the collection for the specific day.
+  var filteredCollectionNO2 = NO2_collection.filterDate(date, date.advance(1, 'day'));
+  
+  // Compute the daily mean image and select the NO2 band.
+  var dailyImage = filteredCollectionNO2.mean()
+                     .select('tropospheric_NO2_column_number_density');
+                     
+  // Reduce the daily image over the geometry to get the mean NO2 value.
+  var value = dailyImage.reduceRegion({
+    reducer: ee.Reducer.mean(),
+    geometry: geometry,
+    scale: 1000,
+    maxPixels: 1e13
+  }).get('tropospheric_NO2_column_number_density');
+  
+  // Return the value if data exists for the day; otherwise return null.
+  return ee.Algorithms.If(filteredCollectionNO2.size().gt(0), value, null);
+};
+
+// Define a function to extract the NO2 cloud fraction
+var getNO2CloudFraction = function(date) {
+  date = ee.Date(date);
+  var filteredCollectionNO2 = NO2_collection.filterDate(date, date.advance(1, 'day'));
+  var dailyImage = filteredCollectionNO2.mean().select('cloud_fraction');
+  
+  var value = dailyImage.reduceRegion({
+    reducer: ee.Reducer.mean(),
+    geometry: geometry,
+    scale: 1000,
+    maxPixels: 1e13
+  }).get('cloud_fraction');
+  
+  return ee.Algorithms.If(filteredCollectionNO2.size().gt(0), value, null);
+};
+
+// Get HCHO data without cloud screening
+var HCHO_collection = ee.ImageCollection('COPERNICUS/S5P/OFFL/L3_HCHO')
+  .filterBounds(geometry)
+  .filter(ee.Filter.calendarRange(5, 9, 'month'))
+  .filter(ee.Filter.calendarRange(2019, 2024, 'year'));
+
+// Define a function to extract the mean tropospheric HCHO value for a given day.
+var getHCHOValue = function(date) {
+  date = ee.Date(date);
+  // Filter the collection for images within the specified day.
+  var filteredCollectionHCHO = HCHO_collection.filterDate(date, date.advance(1, 'day'));
+  // Compute the daily mean image and select the HCHO band.
+  var dailyImage = filteredCollectionHCHO.mean().select('tropospheric_HCHO_column_number_density');
+  
+  // Reduce the image over the geometry to determine the mean HCHO value.
+  var value = dailyImage.reduceRegion({
+    reducer: ee.Reducer.mean(),
+    geometry: geometry,
+    scale: 1000,
+    maxPixels: 1e13
+  }).get('tropospheric_HCHO_column_number_density');
+  
+  return ee.Algorithms.If(filteredCollectionHCHO.size().gt(0), value, null);
+};
+
+// Define a function to extract the HCHO cloud fraction
+var getHCHOCloudFraction = function(date) {
+  date = ee.Date(date);
+  var filteredCollectionHCHO = HCHO_collection.filterDate(date, date.advance(1, 'day'));
+  var dailyImage = filteredCollectionHCHO.mean().select('cloud_fraction');
+  
+  var value = dailyImage.reduceRegion({
+    reducer: ee.Reducer.mean(),
+    geometry: geometry,
+    scale: 1000,
+    maxPixels: 1e13
+  }).get('cloud_fraction');
+  
+  return ee.Algorithms.If(filteredCollectionHCHO.size().gt(0), value, null);
+};
+
+
+// Define helper function to extract QA bits from the QA band.
+function getQABits(image, start, end, newName) {
+  var pattern = 0;
+  for (var i = start; i <= end; i++) {
+    pattern += Math.pow(2, i);
+  }
+  return image.select([0], [newName])
+              .bitwiseAnd(pattern)
+              .rightShift(start);
+}
+
+// Function to mask out cloudy pixels using the QA band.
+// This extracts bits 8-11 (internal cloud flag) and masks pixels where the flag is non-zero.
+function maskQuality(image) {
+  var QA = image.select('AOD_QA');
+  var internalQuality = getQABits(QA, 8, 11, 'internal_quality_flag');
+  return image.updateMask(internalQuality.eq(0));
+}
+
+// Get AOD data, apply cloud masking, and select the 'Optical_Depth_055' band.
+var AOD_collection = ee.ImageCollection('MODIS/061/MCD19A2_GRANULES')
+    .filterBounds(geometry)
+    .filter(ee.Filter.calendarRange(5, 9, 'month'))
+    .filter(ee.Filter.calendarRange(2019, 2024, 'year'))
+    .map(maskQuality)  // Apply cloud masking to each image in the collection.
+    .select('Optical_Depth_055');
+
+// Define a value extraction function that computes the mean AOD over the specified geometry for a one-day period.
+var getAODValue = function(date) {
+  var filteredCollectionAOD = AOD_collection.filterDate(date, ee.Date(date).advance(1, 'day'));
+  var value = filteredCollectionAOD.mean().reduceRegion({
+    reducer: ee.Reducer.mean(),
+    geometry: geometry,
+    scale: 1000,
+    maxPixels: 1e13
+  }).get('Optical_Depth_055');
+  return ee.Algorithms.If(filteredCollectionAOD.size().gt(0), value, null);
+};
+
+
+  // Function to get BC value for a specific date and hour
+  var getBCSMASSValue = function(date) {
+    var filteredCollectionBCSMASS = BCSMASS_collection
+      .filterDate(date, ee.Date(date).advance(1, 'day'))
+      .filter(ee.Filter.eq('hour', 20))
+      .map(function(image) {
+        return image.reproject({
+          crs: targetProjection
+        });
+      });
+      
+    var value = filteredCollectionBCSMASS.mean().reduceRegion({
+      reducer: ee.Reducer.mean(),
+      geometry: geometry,
+      scale: 20000,
+      maxPixels: 1e13
+    }).get('BCSMASS');
+
+    return ee.Algorithms.If(
+      ee.Algorithms.IsEqual(value, null),
+      null,
+      ee.Number(value).multiply(1e09) // Convert to µg/m³
+    );
+  };
+  
+  // Function to get 24-hour mean BC value
+  var getBC24HourMeanValue = function(date) {
+    var startDateTime = ee.Date(date).advance(6, 'hour');
+    var endDateTime = ee.Date(date).advance(30, 'hour');
+    var filteredCollection = ee.ImageCollection('NASA/GSFC/MERRA/aer/2')
+      .select('BCSMASS')
+      .filterDate(startDateTime, endDateTime);
+
+    var value = filteredCollection.mean().multiply(1e09).reduceRegion({
+      reducer: ee.Reducer.mean(),
+      geometry: geometry,
+      scale: 20000,
+      maxPixels: 1e13
+    }).get('BCSMASS');
+
+    return ee.Algorithms.If(ee.Algorithms.IsEqual(value, null), null, value);
+  };
+  
+  // Function to get 24-hour mean OC value
+  var getOC24HourMeanValue = function(date) {
+    var startDateTime = ee.Date(date).advance(6, 'hour');
+    var endDateTime = ee.Date(date).advance(30, 'hour');
+    var filteredCollection = ee.ImageCollection('NASA/GSFC/MERRA/aer/2')
+      .select('OCSMASS')
+      .filterDate(startDateTime, endDateTime);
+
+    var value = filteredCollection.mean().multiply(1e09).reduceRegion({
+      reducer: ee.Reducer.mean(),
+      geometry: geometry,
+      scale: 20000,
+      maxPixels: 1e13
+    }).get('OCSMASS');
+
+    return ee.Algorithms.If(ee.Algorithms.IsEqual(value, null), null, value);
+  };
+
+  // Function to get 24-hour mean dust value
+  var getDust24HourMeanValue = function(date) {
+    var startDateTime = ee.Date(date).advance(6, 'hour');
+    var endDateTime = ee.Date(date).advance(30, 'hour');
+    var filteredCollection = ee.ImageCollection('NASA/GSFC/MERRA/aer/2')
+      .select('DUSMASS25')
+      .filterDate(startDateTime, endDateTime);
+
+    var value = filteredCollection.mean().multiply(1e09).reduceRegion({
+      reducer: ee.Reducer.mean(),
+      geometry: geometry,
+      scale: 20000,
+      maxPixels: 1e13
+    }).get('DUSMASS25');
+
+    return ee.Algorithms.If(ee.Algorithms.IsEqual(value, null), null, value);
+  };
+
+  // Create a feature collection with all data for each date
+  var featureCollection = ee.FeatureCollection(dateList.map(function(date) {
+    var dateObj = ee.Date(date);
+    var coValue = getCOValue(date);
+    var no2Value = getNO2Value(date);
+    var hchoValue = getHCHOValue(date);
+    var aodValue = getAODValue(date);
+    var bcsmassValue = getBCSMASSValue(date);
+    var no2CloudFraction = getNO2CloudFraction(date);
+    var hchoCloudFraction = getHCHOCloudFraction(date);
+    
+    var bc24HourMeanValue = ee.Number(getBC24HourMeanValue(date));
+    var oc24HourMeanValue = ee.Number(getOC24HourMeanValue(date));
+    var dust24HourMeanValue = ee.Number(getDust24HourMeanValue(date));
+    
+    var month = ee.Number.parse(dateObj.format('M'));
+    
+    // Flag calculation for percentile thresholds
+    var co95Mask = ee.String('');
+    var co99Mask = ee.String('');
+    var bc95Mask = ee.String('');
+    var bc99Mask = ee.String('');
+
+    co95Mask = ee.Algorithms.If(
+      ee.Algorithms.IsEqual(coValue, null),
+      'NA',
+      ee.Algorithms.If(
+        ee.Number(coValue).gte(ee.Number(co95)),
+        '1',
+        '0'
+      )
+    );
+
+    co99Mask = ee.Algorithms.If(
+      ee.Algorithms.IsEqual(coValue, null),
+      'NA',
+      ee.Algorithms.If(
+        ee.Number(coValue).gte(ee.Number(co99)),
+        '1',
+        '0'
+      )
+    );
+
+    bc95Mask = ee.Algorithms.If(
+      bcsmassValue,
+      ee.Algorithms.If(
+        ee.Number(bcsmassValue).gte(ee.Number(bc95)),
+        '1',
+        '0'
+      ),
+      '0'
+    );
+
+    bc99Mask = ee.Algorithms.If(
+      bcsmassValue,
+      ee.Algorithms.If(
+        ee.Number(bcsmassValue).gte(ee.Number(bc99)),
+        '1',
+        '0'
+      ),
+      '0'
+    );
+
+    // Calculate sum of flags for identifying potential smoke events
+    var sumOfFlags = ee.Number(0)
+      .add(ee.Algorithms.If(ee.Algorithms.IsEqual(co95Mask, '1'), 1, 0))
+      .add(ee.Algorithms.If(ee.Algorithms.IsEqual(co99Mask, '1'), 1, 0))
+      .add(ee.Number.parse(bc95Mask))
+      .add(ee.Number.parse(bc99Mask));
+
+    // Create a feature with all data for this date
+    return ee.Feature(null, {
+      'date': dateObj.format('M/d/yyyy'),
+      'month': month,
+      'CO (moles/m2)': coValue,
+      'NO2 (moles/m2)': no2Value,
+      'HCHO (moles/m2)': hchoValue,
+      'NO2 Cloud Fraction': no2CloudFraction,
+      'HCHO Cloud Fraction': hchoCloudFraction,
+      'AOD (x10^3)': aodValue,
+      'BCSMASS (ug/m3)': bcsmassValue,
+      '24-hour Mean Dust PM25 (ug/m3)': dust24HourMeanValue,
+      '24-hour Mean BCSMASS (ug/m3)': bc24HourMeanValue,
+      '24-hour Mean OCSMASS (ug/m3)': oc24HourMeanValue,
+      'CO>=95th percentile': co95Mask,
+      'CO>=99th percentile': co99Mask,
+      'BC>=95th percentile': bc95Mask,
+      'BC>=99th percentile': bc99Mask,
+      'Sum_of_Flags': sumOfFlags
+    });
+  }));
+
+  // Add header features with metadata about the export
+  var headerFeatures = ee.FeatureCollection([
+    ee.Feature(null, {
+      'Header': 'Region/Site: ' + 'export_file' + exportCount
+    }),
+    ee.Feature(null, {
+      'Header': 'Geometry Coordinates:'
+    }),
+    ee.Feature(null, {
+      'Header': ee.String('Northwest corner: ')
+        .cat(ee.Number(sw.get(0)).format('%.4f'))
+        .cat(', ')
+        .cat(ee.Number(sw.get(1)).format('%.4f'))
+    }),
+    ee.Feature(null, {
+      'Header': ee.String('Northeast corner: ')
+        .cat(ee.Number(se.get(0)).format('%.4f'))
+        .cat(', ')
+        .cat(ee.Number(se.get(1)).format('%.4f'))
+    }),
+    ee.Feature(null, {
+      'Header': ee.String('Southeast corner: ')
+        .cat(ee.Number(ne.get(0)).format('%.4f'))
+        .cat(', ')
+        .cat(ee.Number(ne.get(1)).format('%.4f'))
+    }),
+    ee.Feature(null, {
+      'Header': ee.String('Southwest corner: ')
+        .cat(ee.Number(nw.get(0)).format('%.4f'))
+        .cat(', ')
+        .cat(ee.Number(nw.get(1)).format('%.4f'))
+    })
+  ]);
+
+  // Combine header and data features
+  var finalCollection = headerFeatures.merge(featureCollection);
+
+  // Set up the export task
+  Export.table.toDrive({
+    collection: finalCollection,
+    description: 'export_file' + exportCount,
+    fileFormat: 'CSV',
+    selectors: [
+      'Header',
+      'date',
+      'month',
+      'CO (moles/m2)',
+      'NO2 (moles/m2)',
+      'HCHO (moles/m2)',
+      'NO2 Cloud Fraction',
+      'HCHO Cloud Fraction',
+      'AOD (x10^3)',
+      'BCSMASS (ug/m3)',
+      '24-hour Mean Dust PM25 (ug/m3)',
+      '24-hour Mean BCSMASS (ug/m3)',
+      '24-hour Mean OCSMASS (ug/m3)',
+      'CO>=95th percentile',
+      'CO>=99th percentile',
+      'BC>=95th percentile',
+      'BC>=99th percentile',
+      'Sum_of_Flags'
+    ],
+    fileNamePrefix: 'export_file' + exportCount
+  });
+  
+  print('CSV export has been set up. Check the Tasks tab to start the export.');
+
+
+  // Increment export counter for future exports
+  exportCount++;
+
+  // Remove the drawing after export is set up
+  try {
+    setTimeout(function() {
+      if (Map.drawingTools().layers().length() > 0) {
+        Map.drawingTools().layers().remove(Map.drawingTools().layers().get(0));
+      }
+    }, 1000);
+  } catch (e) {
+    if (Map.drawingTools().layers().length() > 0) {
+      Map.drawingTools().layers().remove(Map.drawingTools().layers().get(0));
+    }
+  }
+}
+
+// Initialize the map with the default settings
+updateMap();
+
+// Set up event handler for the date slider
+dateSlider.onChange(updateMap);
